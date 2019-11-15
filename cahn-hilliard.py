@@ -99,32 +99,39 @@ class InitialConditions(UserExpression):
 
 # Sub domain for Periodic boundary condition
 # Cf. https://fenicsproject.org/qa/262/possible-specify-more-than-one-periodic-boundary-condition/
+#     https://fenicsproject.org/qa/1025/periodic-boundary-conditions-for-poisson-problem/
 class PeriodicBoundary(SubDomain):
+    def __init__(self, tolerance=DOLFIN_EPS, length=1.0, length_scaling=1.0):
+        SubDomain.__init__(self)
+        self.tol = tolerance
+        self.length = length
+        self.length_scaling = length_scaling
+        self.L = self.length / self.length_scaling
 
-    # Left boundary is "target domain" G
     def inside(self, x, onBoundary):
         # return True if on left or bottom boundary AND NOT on one of the two corners (0, 1) and (1, 0)
         return bool(
             (near(x[0], 0) or near(x[1], 0))
             and (
                 not (
-                    (near(x[0], 0) and near(x[1], 1))
-                    or (near(x[0], 1) and near(x[1], 0))
+                    (near(x[0], 0) and near(x[1], self.length / self.length_scaling))
+                    or (near(x[0], self.length / self.length_scaling) and near(x[1], 0))
                 )
             )
             and onBoundary
         )
 
     def map(self, x, y):
-        if near(x[0], 1) and near(x[1], 1):
-            y[0] = x[0] - 1.0
-            y[1] = x[1] - 1.0
-        elif near(x[0], 1):
-            y[0] = x[0] - 1.0
+        L = self.length / self.length_scaling
+        if near(x[0], self.L) and near(x[1], self.L):
+            y[0] = x[0] - self.L
+            y[1] = x[1] - self.L
+        elif near(x[0], self.L):
+            y[0] = x[0] - self.L
             y[1] = x[1]
-        else:  # near(x[1], 1)
+        else:  # near(x[1], self.L)
             y[0] = x[0]
-            y[1] = x[1] - 1.0
+            y[1] = x[1] - self.L
 
 
 # This is a subclass of :py:class:`Expression
@@ -188,10 +195,10 @@ runtime = 1e6
 theta = 0.5  # time stepping family; theta=0.5 -> Crank-Nicolson
 ne = 192
 deg = 1
-dt = (float(Lx) / ne)**2 / kappa
+dt = (float(Lx) / (ne + 1)) ** 2 / kappa
 
 mesh = RectangleMesh(Point(0, 0), Point(Lx, Ly), ne, ne)
-pbc = PeriodicBoundary()
+pbc = PeriodicBoundary(length=Lx, length_scaling=1.0)
 P1 = FiniteElement("Lagrange", mesh.ufl_cell(), degree=deg)
 ME = FunctionSpace(mesh, P1 * P1, constrained_domain=pbc)
 
@@ -323,7 +330,6 @@ solver.parameters["preconditioner"] = "ilu"
 solver.parameters["convergence_criterion"] = "incremental"
 solver.parameters["relative_tolerance"] = 1e-6
 
-
 # The string ``"bicgstab"`` passed to the Newton solver indicated that a biconjugate
 # gradient stabilized solver should be used, with a Jacobi preconditioner.  The setting of
 # ``parameters["convergence_criterion"] = "incremental"`` specifies that the Newton solver
@@ -356,7 +362,23 @@ with open("results/free_energy_A.csv", "w") as logfile:
     timestep.append(t)
     freeEnrg.append(Ftot)
     logfile.write("{0},{1},{2}\n".format(t, Ftot, dt))
-    tOut = (100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 500000, 1000000)
+    tOut = (
+        10,
+        20,
+        50,
+        100,
+        200,
+        500,
+        1000,
+        2000,
+        5000,
+        10000,
+        20000,
+        50000,
+        100000,
+        500000,
+        1000000,
+    )
 
     # Step in time
     while t < runtime:
