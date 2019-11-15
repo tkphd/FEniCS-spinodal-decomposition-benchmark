@@ -5,6 +5,37 @@ This repository contains an implementation of the
 Decomposition](https://pages.nist.gov/chimad-phase-field/benchmarks/benchmark1.ipynb/)
 using [FEniCS](https://www.fenicsproject.org).
 
+### Numerical Methods
+
+FEniCS offers the following solvers and preconditioners.
+
+Solver method | Description
+------------- | -----------
+bicgstab      | Biconjugate gradient stabilized method
+cg            | Conjugate gradient method
+default       | default linear solver
+gmres         | Generalized minimal residual method
+minres        | Minimal residual method
+mumps         | MUMPS (MUltifrontal Massively Parallel Sparse direct Solver)
+petsc         | PETSc built in LU solver
+richardson    | Richardson method
+tfqmr         | Transpose-free quasi-minimal residual method
+umfpack       | UMFPACK (Unsymmetric MultiFrontal sparse LU factorization)
+
+Preconditioner   | Description
+---------------- | -----------
+amg              |  Algebraic multigrid
+default          |  default preconditioner
+hypre\_amg       |  Hypre algebraic multigrid (BoomerAMG)
+hypre\_euclid    |  Hypre parallel incomplete LU factorization
+hypre\_parasails |  Hypre parallel sparse approximate inverse
+icc              |  Incomplete Cholesky factorization
+ilu              |  Incomplete LU factorization
+jacobi           |  Jacobi iteration
+one             |  No preconditioner
+petsc\_amg       |  PETSc algebraic multigrid
+sor              |  Successive over-relaxation
+
 ### Resources
 
 - [Cahn-Hilliard Example in FEniCS](https://fenicsproject.org/docs/dolfin/latest/python/demos/cahn-hilliard/demo_cahn-hilliard.py.html)
