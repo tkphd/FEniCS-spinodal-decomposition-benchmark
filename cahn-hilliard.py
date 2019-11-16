@@ -54,6 +54,7 @@ from resource import getrusage, RUSAGE_SELF, RUSAGE_CHILDREN
 from dolfin import *
 from math import sin, cos
 import matplotlib.pyplot as plt
+from sys import exit
 
 #
 # Benchmark parameters
@@ -147,7 +148,6 @@ class PeriodicBoundary(SubDomain):
 # solver is now defined. It is a subclass of :py:class:`NonlinearProblem
 # <dolfin.cpp.NonlinearProblem>`. ::
 
-
 class CahnHilliardEquation(NonlinearProblem):
     def __init__(self, a, L):
         NonlinearProblem.__init__(self)
@@ -171,6 +171,7 @@ class CahnHilliardEquation(NonlinearProblem):
 # .. index::
 #    singe: form compiler options; (in Cahn-Hilliard demo)
 #
+#
 # It is possible to pass arguments that control aspects of the generated code to the form
 # compiler. The lines ::
 
@@ -184,7 +185,7 @@ parameters["form_compiler"]["cpp_optimize"] = True
 # magnitude faster for certain operations, depending on the equation), but it may take
 # considerably longer to generate the code and the generation phase may use considerably
 # more memory).
-#
+
 # A 200×200 square mesh with 97 (= 96 + 1) vertices in each direction is created, and on
 # this mesh a :py:class:`FunctionSpace <dolfin.functions.functionspace.FunctionSpace>`
 # ``ME`` is built using a pair of linear Lagrangian elements. ::
@@ -195,7 +196,7 @@ runtime = 1e6
 theta = 0.5  # time stepping family; theta=0.5 -> Crank-Nicolson
 ne = 192
 deg = 1
-dt = (float(Lx) / (ne + 1)) ** 2 / kappa
+dt = 2.0 ** (-9) # (float(Lx) / (ne + 1)) ** 4 / kappa
 
 mesh = RectangleMesh(Point(0, 0), Point(Lx, Ly), ne, ne)
 pbc = PeriodicBoundary(length=Lx, length_scaling=1.0)
@@ -221,6 +222,7 @@ q, v = TestFunctions(ME)
 # Define functions
 u = Function(ME)  # current solution
 u0 = Function(ME)  # solution from previous converged step
+uh = Function(ME)  # high-res solution
 
 # Split mixed functions
 dc, dmu = split(du)
@@ -241,6 +243,7 @@ c0, mu0 = split(u0)
 u_init = InitialConditions(degree=deg)
 u.interpolate(u_init)
 u0.interpolate(u_init)
+uh.interpolate(u_init)
 
 # The first line creates an object of type ``InitialConditions``.  The following two lines
 # make ``u`` and ``u0`` interpolants of ``u_init`` (since ``u`` and ``u0`` are finite
@@ -342,6 +345,39 @@ timestep = []
 freeEnrg = []
 F = f + 0.5 * kappa * dot(grad(c), grad(c))
 
+# The Cahn-Hilliard equation takes a while to reach steady state, so adaptive time-stepping
+# is in order. The following function is based off of the FEniCS Hands-On Tutorial,
+# https://fenics-handson.readthedocs.io/en/latest/heat/doc.html:
+# 1. Take a low-resolution step with k = dt
+# 2. Take two high-resolution steps with k = dt/2
+# 3. Estimate the error by Richardson extrapolation:
+#    .. math::
+#      \eta = \frac{|| u_{\mathrm{hi}}^{n+1} - u_{\mathrm{lo}}^{n+1} ||_{L^2}}{2^p - 1}
+#
+#     where :math:`p=1` for Crank-Nicholson (:math:`theta=0.5`).
+# 4. Given a tolerance :math:`T` and safety factor :math:`0 < \rho < 1`,
+#    set the new timestep::
+#    .. math::
+#      \Delta t^* = \left(\frac{\rho T}{\eta}\right)^{1/p} \Delta t
+
+def timestep_adapter(dt0, u0, ul, uh, tol):
+    dt = dt0 / 2
+    uh.vector()[:] = u0.vector()
+    solver.solve(problem, uh.vector())
+    u0.vector()[:] = uh.vector()
+    solver.solve(problem, uh.vector())
+    # eta = sqrt(errornorm(u, uh, norm_type="l2", degree_rise=2, mesh=mesh)) / 3.0
+    eta = sqrt(assemble((u - uh)**2 * dx)) / 3.0
+    dt = dt0 * sqrt(0.9 * tol / eta)
+
+    if dt < dt0:
+        exit("WARN: previous timestep ({0}) was too large! (Δ = {1})".format(dt0, tol / eta))
+    else:
+        print("New dt: ", dt)
+
+    return dt
+
+
 # To run the solver and save the output to a VTK file for later visualization, the solver
 # is advanced in time from :math:`t_{n}` to :math:`t_{n+1}` until a terminal time
 # :math:`T` is reached::
@@ -355,29 +391,22 @@ with open("results/free_energy_A.csv", "w") as logfile:
     # Write initial condition
     t = 0.0
     file << (u.split()[0], t)
-
-    # Prepare to march
-    i = 0
     Ftot = assemble(F * dx)
     timestep.append(t)
     freeEnrg.append(Ftot)
     logfile.write("{0},{1},{2}\n".format(t, Ftot, dt))
+
+    # Prepare to march
+    i = 0
+    j = 0
     tOut = (
-        10,
-        20,
-        50,
-        100,
-        200,
-        500,
-        1000,
-        2000,
-        5000,
-        10000,
-        20000,
-        50000,
-        100000,
-        500000,
-        1000000,
+              1,       2,       5,
+             10,      20,      50,
+            100,     200,     500,
+           1000,    2000,    5000,
+          10000,   20000,   50000,
+         100000,  200000,  500000,
+        1000000, 2000000, 5000000
     )
 
     # Step in time
@@ -385,14 +414,21 @@ with open("results/free_energy_A.csv", "w") as logfile:
         u0.vector()[:] = u.vector()
         solver.solve(problem, u.vector())
         t += dt
+        j += 1
 
         # Log free energy
         Ftot = assemble(F * dx)
         timestep.append(t)
         freeEnrg.append(Ftot)
         logfile.write("{0},{1},{2}\n".format(t, assemble(F * dx), dt))
+        logfile.flush()
 
-        # Visualize field periodically
+        ## Update timestep
+        #if j == 20:
+        #    dt = timestep_adapter(dt, u0, u, uh, 1.0e-5)
+        #    j = 1
+
+        # Visualize field
         if t > tOut[i]:
             i += 1
             file << (u.split()[0], t)
