@@ -195,8 +195,8 @@ Lx = Ly = 200
 runtime = 1e4
 theta = 0.5  # time stepping family; theta=(0, ½, 1) -> (Forward, Crank-Nicolson, Backward)
 ne = 192
-deg = 1
-tolerance = 1e-5
+deg = 3
+tolerance = 1e-6
 adapt_steps = 10
 dt = tolerance / 4
 
