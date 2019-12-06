@@ -7,7 +7,9 @@ using [FEniCS](https://www.fenicsproject.org).
 
 ### Numerical Methods
 
-FEniCS offers the following solvers and preconditioners.
+FEniCS offers the following solvers and preconditioners, listed using
+`print(list_linear_solver_methods())` and `print(list_krylov_solver_preconditioners())`,
+respectively.
 
 Solver method | Description
 ------------- | -----------
