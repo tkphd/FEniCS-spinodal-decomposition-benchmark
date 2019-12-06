@@ -81,6 +81,7 @@ kappa = 2.0
 # Implementation
 # --------------
 
+
 class InitialConditions(UserExpression):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -114,15 +115,14 @@ class PeriodicBoundary(SubDomain):
             (near(x[0], 0) or near(x[1], 0))
             and (
                 not (
-                    (near(x[0], 0) and near(x[1], self.length / self.length_scaling))
-                    or (near(x[0], self.length / self.length_scaling) and near(x[1], 0))
+                    (near(x[0], 0) and near(x[1], self.L))
+                    or (near(x[0], self.L) and near(x[1], 0))
                 )
             )
             and onBoundary
         )
 
     def map(self, x, y):
-        L = self.length / self.length_scaling
         if near(x[0], self.L) and near(x[1], self.L):
             y[0] = x[0] - self.L
             y[1] = x[1] - self.L
@@ -178,6 +178,7 @@ class CahnHilliardEquation(NonlinearProblem):
 # Form compiler options
 parameters["form_compiler"]["optimize"] = True
 parameters["form_compiler"]["cpp_optimize"] = True
+parameters["form_compiler"]["cpp_optimize_flags"] = "-O2 -ffast-math"
 
 # tell the form to apply optimization strategies in the code generation phase and the use
 # compiler optimization flags when compiling the generated C++ code. Using the option
@@ -191,14 +192,16 @@ parameters["form_compiler"]["cpp_optimize"] = True
 # ``ME`` is built using a pair of linear Lagrangian elements. ::
 
 # Create mesh and build function space
-Lx = Ly = 200
-runtime = 1e4
-theta = 0.5  # time stepping family; theta=(0, ½, 1) -> (Forward, Crank-Nicolson, Backward)
+Lx = Ly = 200.0
+runtime = 5e5
+theta = (
+    0.5  # time stepping family; theta=(0, ½, 1) -> (Forward, Crank-Nicolson, Backward)
+)
 ne = 192
 deg = 1
-tolerance = 1e-5
+rtol = 1e-6
 adapt_steps = 10
-dt = tolerance / 4
+dt = rtol / 4
 
 mesh = RectangleMesh(Point(0, 0), Point(Lx, Ly), ne, ne)
 pbc = PeriodicBoundary(length=Lx, length_scaling=1.0)
@@ -230,7 +233,6 @@ ub = Function(ME)  # adaptivity solution
 dc, dmu = split(du)
 c, mu = split(u)
 c0, mu0 = split(u0)
-cb, mb = split(ub)
 
 # The line ``c, mu = split(u)`` permits direct access to the components of a mixed
 # function. Note that ``c`` and ``mu`` are references for components of ``u``, and not
@@ -246,7 +248,6 @@ cb, mb = split(ub)
 u_init = InitialConditions(degree=deg)
 u.interpolate(u_init)
 u0.interpolate(u_init)
-ub.interpolate(u_init)
 
 # The first line creates an object of type ``InitialConditions``.  The following two lines
 # make ``u`` and ``u0`` interpolants of ``u_init`` (since ``u`` and ``u0`` are finite
@@ -262,6 +263,7 @@ ub.interpolate(u_init)
 c = variable(c)
 f = rho * (c - ca) ** 2 * (cb - c) ** 2
 dfdc = diff(f, c)
+F = f + 0.5 * kappa * dot(grad(c), grad(c))
 
 # The first line declares that ``c`` is a variable that some function can be
 # differentiated with respect to. The next line is the function :math:`f` defined in the
@@ -275,8 +277,11 @@ mu_mid = (1.0 - theta) * mu0 + theta * mu
 # which is then used in the definition of the variational forms::
 
 # Weak statement of the equations
-Lcn = ( c * q - c0 * q + dt * dot(grad(mu_mid), grad(q))
-      + mu * v - dfdc * v - kappa * dot(grad(c), grad(v))) * dx
+L0 = c * q * dx - c0 * q * dx + dt * dot(grad(mu_mid), grad(q)) * dx
+L1 = mu * v * dx - dfdc * v * dx - kappa * dot(grad(c), grad(v)) * dx
+Lcn = L0 + L1
+# Lcn = ( (c - c0) * q + dt * dot(grad(mu_mid), grad(q))
+#      + (mu - dfdc) * v - kappa * dot(grad(c), grad(v))) * dx(mesh)
 
 # This is a statement of the time-discrete equations presented as part of the problem
 # statement, using UFL syntax. The linear forms for the two equations can be summed into
@@ -284,7 +289,7 @@ Lcn = ( c * q - c0 * q + dt * dot(grad(mu_mid), grad(q))
 # bilinear form which represents the Jacobian matrix::
 
 # Compute directional derivative about u in the direction of du (Jacobian)
-lcn = derivative(Lcn, u, du)
+acn = derivative(Lcn, u, du)
 
 # .. index::
 #    single: Newton solver; (in Cahn-Hilliard demo)
@@ -296,13 +301,8 @@ lcn = derivative(Lcn, u, du)
 # <dolfin.cpp.NonlinearProblem>`. We need to instantiate objects of both
 # ``CahnHilliardEquation`` and :py:class:`NewtonSolver <dolfin.cpp.NewtonSolver>`::
 
-crank_nicolson_problem = CahnHilliardEquation(lcn, Lcn)
-
-# Create a second problem using backward Euler for timestep adaptivity
-Lbe = ( cb * q - c0 * q + dt * dot(grad(mb), grad(q))
-      + mb * v - dfdc * v - kappa * dot(grad(cb), grad(v))) * dx
-lbe = derivative(Lbe, ub, du)
-implicit_problem = CahnHilliardEquation(lbe, Lbe)
+crank_nicolson_problem = CahnHilliardEquation(acn, Lcn)
+implicit_problem = CahnHilliardEquation(acn, Lcn)
 
 # List available linear solvers using ``print(list_linear_solver_methods())``:
 #
@@ -337,7 +337,13 @@ solver = NewtonSolver()
 solver.parameters["linear_solver"] = "gmres"
 solver.parameters["preconditioner"] = "ilu"
 solver.parameters["convergence_criterion"] = "incremental"
-solver.parameters["relative_tolerance"] = tolerance
+solver.parameters["relative_tolerance"] = rtol
+
+# The setting of ``parameters["convergence_criterion"] = "incremental"``
+# specifies that the Newton solver should compute a norm of the solution
+# increment to check for convergence (the other possibility is to use
+# ``"residual"``, or to provide a user-defined check). The tolerance for
+# convergence is specified by ``parameters["relative_tolerance"] = 1e-6``.
 
 beSolver = NewtonSolver()
 beSolver.parameters["linear_solver"] = "gmres"
@@ -345,24 +351,10 @@ beSolver.parameters["preconditioner"] = "ilu"
 beSolver.parameters["convergence_criterion"] = "incremental"
 beSolver.parameters["relative_tolerance"] = 1.0e-3
 
-# The string ``"bicgstab"`` passed to the Newton solver indicated that a biconjugate
-# gradient stabilized solver should be used, with a Jacobi preconditioner.  The setting of
-# ``parameters["convergence_criterion"] = "incremental"`` specifies that the Newton solver
-# should compute a norm of the solution increment to check for convergence (the other
-# possibility is to use ``"residual"``, or to provide a user-defined check). The tolerance
-# for convergence is specified by ``parameters["relative_tolerance"] = 1e-6``.
-
-# Create arrays and define the system free energy
-timestep = []
-freeEnrg = []
-F = f + 0.5 * kappa * dot(grad(c), grad(c))
-
 # Sample output on logarithmic timeline
 tOut = np.outer(
     np.array([[1], [10], [100], [1000], [10000], [100000]]), np.array([[2, 5, 10]])
 ).flatten()
-
-print("Writing checkpoints at", tOut)
 
 # To run the solver and save the output to a VTK file for later visualization, the solver
 # is advanced in time from :math:`t_{n}` to :math:`t_{n+1}` until a terminal time
@@ -372,29 +364,26 @@ with open("results/free_energy_A.csv", "w") as logfile:
     logfile.write("time,free_energy\n")
 
     # Viz file
-    file = File("results/output_A_.pvd", "compressed")
+    file = File("results/output_A.pvd", "compressed")
 
     # Write initial condition
     i = 0
     adapt = adapt_steps - 5
     t = 0.0
     file << (u.split()[0], t)
-    Ftot = assemble(F * dx)
+    Ftot = assemble(F * dx(mesh))
     logfile.write("{0},{1}\n".format(t, Ftot))
     logfile.flush()
 
     # Step in time
     while t < runtime:
+        t += dt
         u0.vector()[:] = u.vector()
         solver.solve(crank_nicolson_problem, u.vector())
-        t += dt
-        adapt += 1
 
         # Log free energy
-        Ftot = assemble(F * dx)
-        timestep.append(t)
-        freeEnrg.append(Ftot)
-        logfile.write("{0},{1}\n".format(t, assemble(F * dx)))
+        Ftot = assemble(F * dx(mesh))
+        logfile.write("{0},{1}\n".format(t, Ftot))
 
         if t > tOut[i]:
             # Visualize field
@@ -402,6 +391,7 @@ with open("results/free_energy_A.csv", "w") as logfile:
             i += 1
             logfile.flush()
 
+        adapt += 1
         if adapt == adapt_steps:
             # The Cahn-Hilliard equation takes a while to reach steady state, so adaptive
             # time-stepping is in order. Algorithm after *J. Comp. Phys.* 230 (2011) 5317.
@@ -410,12 +400,16 @@ with open("results/free_energy_A.csv", "w") as logfile:
             dt0 = dt
             ub.vector()[:] = u0.vector()
             beSolver.solve(implicit_problem, ub.vector())
-            error = errornorm(ub, u, norm_type="l2", mesh=mesh) \
-                    / norm(u, norm_type="l2", mesh=mesh)
-            dt = 0.995 * dt0 * sqrt(beSolver.parameters["relative_tolerance"] / error)
-            if dt < dt0:
-                exit("\nERROR: previous timestep was too large! {0:.2e} -> {1:.2e}\n".
-                     format(dt0, dt))
+            error = errornorm(ub, u, norm_type="l2", mesh=mesh) / norm(
+                u, norm_type="l2", mesh=mesh
+            )
+            dt = 0.9 * dt0 * sqrt(beSolver.parameters["relative_tolerance"] / error)
+            if dt / 0.9 < dt0:
+                exit(
+                    "\nERROR: previous timestep was too large! {0:.2e} -> {1:.2e}\n".format(
+                        dt0, dt
+                    )
+                )
             else:
                 print("New timestep: ", dt)
 
@@ -429,12 +423,6 @@ file << (u.split()[0], t)
 # <dolfin.cpp.NewtonSolver.solve>`, with the new solution vector returned in
 # :py:func:`u.vector() <dolfin.cpp.Function.vector>`. The ``c`` component of the solution
 # (the first component of ``u``) is then written to file at every time step.
-
-plt.loglog(timestep, freeEnrg)
-plt.xlabel("Time")
-plt.ylabel("Energy")
-plt.savefig("results/energy_A.png", dpi=400, bbox_inches="tight")
-plt.close()
 
 print("Peak memory usage was ", getrusage(RUSAGE_SELF)[2] / 1024.0, "MB")
 print("Child memory usage was ", getrusage(RUSAGE_CHILDREN)[2] / 1024.0, "MB")
