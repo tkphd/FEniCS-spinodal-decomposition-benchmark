@@ -71,16 +71,14 @@ import numpy as np
 # * :math:`\theta = 0.5`
 # * :math:`L_{x} = L_{y} = 200`
 
-ca = 0.3
-cb = 0.7
-rho = 5.0
-M = 5.0
-kappa = 2.0
+ca = Constant(0.3)
+cb = Constant(0.7)
+rho = Constant(5.0)
+M = Constant(5.0)
+kappa = Constant(2.0)
 
-#
 # Implementation
 # --------------
-
 
 class InitialConditions(UserExpression):
     def __init__(self, **kwargs):
@@ -193,7 +191,7 @@ parameters["form_compiler"]["cpp_optimize_flags"] = "-O2 -ffast-math"
 
 # Create mesh and build function space
 Lx = Ly = 200.0
-runtime = 5e5
+runtime = 10
 theta = (
     0.5  # time stepping family; theta=(0, ½, 1) -> (Forward, Crank-Nicolson, Backward)
 )
@@ -202,6 +200,7 @@ deg = 1
 rtol = 1e-6
 adapt_steps = 10
 dt = rtol / 4
+debug = True
 
 mesh = RectangleMesh(Point(0, 0), Point(Lx, Ly), ne, ne)
 pbc = PeriodicBoundary(length=Lx, length_scaling=1.0)
@@ -356,12 +355,15 @@ tOut = np.outer(
     np.array([[1], [10], [100], [1000], [10000], [100000]]), np.array([[2, 5, 10]])
 ).flatten()
 
+dbgfile = open("results/adaptive.csv", "w")
+
 # To run the solver and save the output to a VTK file for later visualization, the solver
 # is advanced in time from :math:`t_{n}` to :math:`t_{n+1}` until a terminal time
 # :math:`T` is reached::
 
 with open("results/free_energy_A.csv", "w") as logfile:
     logfile.write("time,free_energy\n")
+    dbgfile.write("dt,ub-u,u,quot,error,dτ\n")
 
     # Viz file
     file = File("results/output_A.pvd", "compressed")
@@ -392,7 +394,7 @@ with open("results/free_energy_A.csv", "w") as logfile:
             logfile.flush()
 
         adapt += 1
-        if adapt == adapt_steps:
+        if debug or adapt == adapt_steps:
             # The Cahn-Hilliard equation takes a while to reach steady state, so adaptive
             # time-stepping is in order. Algorithm after *J. Comp. Phys.* 230 (2011) 5317.
             adapt = 0
@@ -400,10 +402,13 @@ with open("results/free_energy_A.csv", "w") as logfile:
             dt0 = dt
             ub.vector()[:] = u0.vector()
             beSolver.solve(implicit_problem, ub.vector())
-            error = errornorm(ub, u, norm_type="l2", mesh=mesh) / norm(
-                u, norm_type="l2", mesh=mesh
-            )
-            dt = 0.9 * dt0 * sqrt(beSolver.parameters["relative_tolerance"] / error)
+            deltaU = errornorm(ub, u, norm_type="l2", mesh=mesh)
+            residU = norm(u, norm_type="l2", mesh=mesh)
+            quot = deltaU / residU
+            error = sqrt(beSolver.parameters["relative_tolerance"] / quot)
+            dt = 0.9 * dt0 * quot
+            if debug:
+                dbgfile.write("{0},{1},{2},{3},{4},{5}\n".format(dt0, deltaU, residU, quot, error, dt))
             if dt / 0.9 < dt0:
                 exit(
                     "\nERROR: previous timestep was too large! {0:.2e} -> {1:.2e}\n".format(
